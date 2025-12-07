@@ -1,0 +1,136 @@
+library(tidymodels)
+library(tidyverse)
+library(vroom)
+library(embed)
+library(baguette)
+library(bonsai)
+
+
+test <- vroom("test.csv")
+train <- vroom("train.csv")
+
+my_recipe <- recipe(loss ~ ., data = train) %>%
+  update_role(id, new_role = "id") %>%
+  step_zv(all_predictors()) %>%
+  step_lencode_glm(all_nominal_predictors(), outcome = vars(loss)) %>%
+  step_normalize(all_numeric_predictors())
+prepped_recipe <- prep(my_recipe)
+baked <- bake(prepped_recipe, new_data=train)
+
+pen_model <- linear_reg(penalty=5, mixture=0.85) %>% 
+  set_engine("glmnet") 
+
+pen_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(pen_model) %>%
+  fit(data=train)
+
+preds <- predict(pen_wf, new_data=test)
+
+kaggle_submission <- preds %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(id, .pred) %>% #Just keep datetime and prediction variables
+  rename(loss=.pred)
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./Penalizedregression.csv", delim=",")
+
+bart_model <- bart(trees= 500, 
+                   prior_terminal_node_coef = .95, 
+                   prior_terminal_node_expo = 2) %>%
+  set_engine("dbarts") %>%
+  set_mode("regression")
+
+bart_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(bart_model) %>%
+  fit(data = train)
+
+bart_preds <- predict(bart_wf, new_data = test)
+
+plot(bart_preds, train$loss)
+
+kaggle_submission <- bart_preds %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(id, .pred) %>% #Just keep datetime and prediction variables
+  rename(loss=.pred)
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./Bartmodel.csv", delim=",")
+
+# 
+# # ## Set up grid of tuning values
+# mygrid <- grid_regular(trees(range = c(1, 50)), levels = 5)
+# # 
+# # 
+# # ## Split data for CV
+# folds <- vfold_cv(train, v = 4, repeats=1)
+# 
+# # ## Run the CV1
+# CV_results <- preg_wf %>%
+#   tune_grid(resamples=folds,
+#             grid=mygrid,
+#             metrics=metric_set( mae)) #Or leave metrics NULL
+# 
+# # ## Find Best Tuning Parameters
+# bestTune <- CV_results %>%
+#   select_best(metric="mae")
+# 
+# final_wf <- preg_wf %>%
+#   finalize_workflow(bestTune) %>%
+#   fit(data=train_file)
+# 
+# # ## Predict
+# final_wf %>%
+#   predict(new_data = test_file)
+
+## Run all the steps on test data
+preds <- predict(final_wf, new_data = test_file )
+
+
+
+boost_model <- boost_tree(tree_depth=tune(),
+                          trees=tune(),
+                          learn_rate=tune()) %>%
+  set_engine("lightgbm") %>% 
+  set_mode("regression")
+
+gbm_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(boost_model)
+
+CV_results <- vfold_cv(train, v = 3, repeats = 1)
+
+grid <- grid_regular(tree_depth(),
+                     trees(),
+                     learn_rate(),
+                     levels = 3)
+
+bestTune <- gbm_wf %>% 
+  tune_grid(
+    resamples = CV_results,
+    grid = grid,
+    metrics = metric_set(mae),
+    control = control_grid()
+  )
+
+best_params <- bestTune %>% 
+  select_best(metric = "mae")
+
+# Finalize the workflow with the best parameters
+final_workflow <- gbm_wf %>%  
+  finalize_workflow(best_params) %>%  
+  fit(data = train)
+
+
+boosted_preds <- predict(final_workflow, new_data = test)
+
+kaggle_submission <- boosted_preds %>%
+  bind_cols(., test) %>% #Bind predictions with test data
+  select(id, .pred) %>% #Just keep datetime and prediction variables
+  rename(loss=.pred)
+#rename pred to count (for submission to Kaggle)
+vroom_write(x=kaggle_submission, file="./LightGBM.csv", delim=",")
+
+
+
