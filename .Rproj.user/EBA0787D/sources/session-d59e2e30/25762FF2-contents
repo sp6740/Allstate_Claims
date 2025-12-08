@@ -3,7 +3,7 @@ library(tidyverse)
 library(vroom)
 library(embed)
 library(baguette)
-library(bonsai)
+
 
 
 test <- vroom("test.csv")
